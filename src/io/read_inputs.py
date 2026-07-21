@@ -47,7 +47,7 @@ def get_and_check_calls(init: str,
                         limit: Optional[str] = None) -> Optional[dict[str, Optional[str]]]:
     while True:
         try:
-            calls = _get_calls(pos, limit)
+            calls = _get_calls(init, pos, limit)
             symbols = list(calls.values())
             if all(isinstance(call, str) for pos, call in calls.items()):
                 all_inits_contained = all([init[i] in symbols[i] for i in range(len(init))])
@@ -78,15 +78,30 @@ def get_and_check_calls(init: str,
                 print_colour(e, "red")
 
 
-def _get_calls(io: str,
+def _get_calls(init: str,
+               io: str,
                limit: Optional[str] = None) -> dict[str, Optional[str]]:
     if limit is None or limit == "left":
-        left = _get_input('l', f"\t\t{'Outside statue' if io == 'o' else 'Inside wall'} left (ex. 'cs'): ", BODIES)
+        input_valid = False
+        while not input_valid:
+            left = _get_input('l', f"\t\t{'Outside statue' if io == 'o' else 'Inside wall'} left (ex. 'cs'): ", BODIES)
+            if init[0] in left:
+                input_valid = True
+            else:
+                print_colour(f"\t\t\t{'Outside statue' if io == 'o' else 'Inside wall'} left call must "
+                             f"contain {init[0]} at least once.", 'red')
     else:
         left = None
 
     if limit is None or limit == "middle":
-        middle = _get_input('m', f"\t\t{'Outside statue' if io == 'o' else 'Inside wall'} middle (ex. 'cs'): ", BODIES)
+        input_valid = False
+        while not input_valid:
+            middle = _get_input('m', f"\t\t{'Outside statue' if io == 'o' else 'Inside wall'} middle (ex. 'cs'): ", BODIES)
+            if init[1] in middle:
+                input_valid = True
+            else:
+                print_colour(f"\t\t\t{'Outside statue' if io == 'o' else 'Inside wall'} middle call must "
+                             f"contain {init[1]} at least once.", 'red')
     else:
         middle = None
 
@@ -95,7 +110,14 @@ def _get_calls(io: str,
             right = ''.join([s for s in list(SHAPES.keys()) * 2  if ''.join([left, middle]).count(s) < 2][:2])
             print_colour(f"\t\t{'Outside statue' if io == 'o' else 'Inside wall'} right: {right}\n", 'green')
         else:
-            right = _get_input('r', f"\t\t{'Outside statue' if io == 'o' else 'Inside wall'} right (ex. 'cs'): ", BODIES)
+            input_valid = False
+            while not input_valid:
+                right = _get_input('r', f"\t\t{'Outside statue' if io == 'o' else 'Inside wall'} right (ex. 'cs'): ", BODIES)
+                if init[2] in right:
+                    input_valid = True
+                else:
+                    print_colour(f"\t\t\t{'Outside statue' if io == 'o' else 'Inside wall'} right call must "
+                                 f"contain {init[2]} at least once.", 'red')
     else:
         right = None
 
@@ -119,10 +141,6 @@ def _get_input(input_type: str,
     if user_input in ["h", "help"]:
         print_colour(info_message)
         input_type = "help"
-    # elif user_input in ["b", "back"]:
-    #     input_type = "back"
-    # elif user_input in ["rb", "rback", "round_back"]:
-    #     input_type = "rback"
 
     for k, v in ref.items():
         if user_input in v:
@@ -134,8 +152,6 @@ def _get_input(input_type: str,
     else:
         if input_type not in ["help", "back", "rback"]:
             raise IOError(error_msg)
-        # elif input_type in ["back", "rback"]:
-        #     return input_type
         else:
             raise IOError()
 
