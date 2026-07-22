@@ -83,12 +83,28 @@ COLOUR_NAME_TO_HEX = {
     "heavygreen": "#00e676",
 }
 
+# Every Text-widget tag actually configured in _build_ui: the colour tags
+# with a real hex value, plus the two special tags ("default" has no hex
+# and is therefore never configured as a tag -- it just means "no tag").
+VALID_LOG_TAGS = {name for name, hexcolor in COLOUR_NAME_TO_HEX.items() if hexcolor} | {"echo", "system", "call_echo"}
+
 ANSI_RE = re.compile(r"\x1b\[\d+m")
+
+# verity_this.py's own banner explains typing 'h'/'help', 'restart', and
+# 'exit' -- all now covered by the GUI's buttons instead of free text, so
+# these three lines (unlike the rest of the banner) are suppressed from the
+# GUI log. Matched by exact stripped text rather than touching verity_this.py
+# itself, so the console version keeps showing them unchanged.
+SUPPRESSED_INTRO_LINES = {
+    "use 'h' or 'help' anytime for instructions,",
+    "'restart' to restart the application,",
+    "or 'exit' to end the application",
+}
 
 # src/io/read_inputs.py's _get_calls prints exactly this (in green) when it
 # auto-computes the third ('right') call from the first two:
 #   "...Outside statue right: tt\n" / "...Inside wall right: tt\n"
-AUTOFILL_RE = re.compile(r"(?:Outside statue|Inside wall) right: ([a-z]{2})")
+AUTOFILL_RE = re.compile(r"(Outside statue|Inside wall) right: ([a-z]{2})")
 
 
 def clean_prompt(text: str) -> str:
@@ -130,6 +146,18 @@ BODY_LABELS = {
     "cs": "Cylinder (cs)",
     "ct": "Cone (ct)",
 }
+
+# Inside walls show the 2D symbol pairs directly (unlike the outside
+# statues, which show the corresponding 3D body) -- so 'l'/'m'/'r' options
+# are labelled as a combination of their two 2D parts when io_context is
+# "inside", instead of the 3D body name used for "outside".
+SHAPE_2D_NAMES = {"c": "Circle", "s": "Square", "t": "Triangle"}
+
+
+def body_2d_label(body_key: str) -> str:
+    return " + ".join(SHAPE_2D_NAMES.get(ch, ch) for ch in body_key)
+
+
 INIT_OPTIONS = ["cst", "cts", "sct", "stc", "tcs", "tsc"]
 
 LABEL_MAPS = {
@@ -141,6 +169,25 @@ LABEL_MAPS = {
     "m": BODY_LABELS,
     "r": BODY_LABELS,
 }
+
+# Short prefixes used in the log to show which question an echoed answer
+# belongs to, e.g. "> Mode: Normal" or "> Inside Left: Sphere (cc)".
+SHORT_PROMPT_LABELS = {
+    "mode": "Mode",
+    "n_strat": "Strategy",
+    "init": "Init",
+    "self_pos": "Position",
+    "number_of_doubles": "Doubles",
+    "yesno": "Restart?",
+}
+FIELD_SHORT_NAME = {"l": "Left", "m": "Middle", "r": "Right"}
+
+
+def short_prompt_label(input_type: str, io_context: "str | None") -> str:
+    if input_type in FIELD_SHORT_NAME:
+        side = "Inside" if io_context == "inside" else "Outside"
+        return f"{side} {FIELD_SHORT_NAME[input_type]}"
+    return SHORT_PROMPT_LABELS.get(input_type, str(input_type).replace("_", " ").title())
 
 # src/io/read_inputs.py now checks, per field, that the 'left' call contains
 # init[0], 'middle' contains init[1], and 'right' (when asked directly)
@@ -197,18 +244,52 @@ def predict_auto_right(left: str, middle: str, shape_key_order: "list[str] | Non
     return ''.join([s for s in order * 2 if combo.count(s) < 2][:2])
 
 
+def is_num_doubles_option_allowed(value: str, call_value: "str | None") -> bool:
+    """Mirrors verity_this.py's own _get_calls consistency check between the
+    already-chosen single call (for the player's own position) and the
+    number-of-doubles answer: num_doubles=0 is impossible if that call is
+    doubled, and num_doubles=3 is impossible if it isn't."""
+    if not call_value or len(call_value) != 2:
+        return True
+    doubled = call_value[0] == call_value[1]
+    if doubled and value == "0":
+        return False
+    if not doubled and value == "3":
+        return False
+    return True
+
+
 def compute_disabled_values(input_type, options, required_letter, current_init,
-                            io_context, last_call_answer, shape_key_order):
+                            io_context, last_call_answer, shape_key_order,
+                            previous_question=None):
     """Pure decision logic for which option *values* should be disabled for
     a given question. Deliberately does nothing (returns an empty set) for
-    any input_type other than the body-call fields 'l', 'm', 'r' -- mode,
-    n_strat, self_pos, number_of_doubles and init are never touched here."""
+    any input_type other than the body-call fields 'l', 'm', 'r' and
+    'number_of_doubles' -- mode, n_strat, self_pos and init are never
+    touched here.
+
+    previous_question, if given, is the (input_type, io_context) of the
+    question shown immediately before this one -- used to make sure a
+    'left' answer is only treated as feeding into 'middle' when it was
+    truly asked right before it in the same call-group, not left over from
+    an earlier round's single-position call (e.g. 'left' in round 1
+    followed by an unrelated 'middle' in round 2)."""
+    if input_type == "number_of_doubles":
+        call_value = None
+        if last_call_answer is not None and last_call_answer[0] in ("l", "m", "r"):
+            call_value = last_call_answer[2]
+        return {
+            value for _, value in options
+            if value is not None and not is_num_doubles_option_allowed(value, call_value)
+        }
+
     if input_type not in ("l", "m", "r"):
         return set()
 
     consumed = ""
     if (
         input_type == "m"
+        and previous_question == ("l", io_context)
         and last_call_answer is not None
         and last_call_answer[:2] == ("l", io_context)
     ):
@@ -386,6 +467,10 @@ class VerityNativeGUI:
         self._current_init: "str | None" = None
         self._current_io_context: "str | None" = None
         self._last_call_answer: "tuple | None" = None  # (input_type, io_context, value)
+        self._last_question_shown: "tuple | None" = None  # (input_type, io_context)
+        self._last_call_io_context: "str | None" = None
+        self._history: "list[dict]" = []       # confirmed answers, in order, for Undo
+        self._replay_queue: "list[dict]" = []   # answers still being auto-replayed after an Undo
 
         install_patches()
         self._build_ui()
@@ -421,6 +506,7 @@ class VerityNativeGUI:
             return b
 
         toolbtn(toolbar, "\u25B6 New Session", self.start_new_session)
+        self.undo_btn = toolbtn(toolbar, "\u2B05 Undo", self.on_undo)
         self.exit_btn = toolbtn(toolbar, "\u2715 Exit tool", self.on_exit_tool)
 
         self.output = scrolledtext.ScrolledText(
@@ -432,6 +518,7 @@ class VerityNativeGUI:
             if hexcolor:
                 self.output.tag_configure(name, foreground=hexcolor)
         self.output.tag_configure("echo", foreground="#ffffff", font=FONT_BOLD)
+        self.output.tag_configure("call_echo", foreground=COLOUR_NAME_TO_HEX["green"], font=FONT_BOLD)
         self.output.tag_configure("system", foreground="#757575", font=("Consolas", 10, "italic"))
 
         question_panel = tk.Frame(self.root, bg=PANEL_BG)
@@ -448,7 +535,7 @@ class VerityNativeGUI:
 
     # ------------------------------------------------------------ session --
 
-    def start_new_session(self) -> None:
+    def start_new_session(self, reset_history: bool = True) -> None:
         if self.worker and self.worker.is_alive() and self.broker:
             self.broker.send_exit()
             self.worker.join(timeout=1.0)
@@ -462,6 +549,12 @@ class VerityNativeGUI:
         self._current_init = None
         self._current_io_context = None
         self._last_call_answer = None
+        self._last_call_io_context = None
+        self._last_question_shown = None
+        self._replay_queue = []
+        if reset_history:
+            self._history = []
+        self._update_undo_button_state()
 
         self.shared_q = queue.Queue()
         self.broker = InputBroker(self.shared_q)
@@ -470,9 +563,44 @@ class VerityNativeGUI:
         self.worker = threading.Thread(target=run_tool, args=(self.broker,), daemon=True)
         self.worker.start()
 
-    def on_exit_tool(self) -> None:
-        if self.broker:
+    def on_undo(self) -> None:
+        if not self._history:
+            return
+        target_history = self._history[:-1]
+        self._start_replay(target_history)
+
+    def _start_replay(self, target_history: "list[dict]") -> None:
+        if self.worker and self.worker.is_alive() and self.broker:
             self.broker.send_exit()
+            self.worker.join(timeout=1.0)
+
+        self._clear_output()
+        self._clear_input_frame()
+        self.question_label.config(text="Replaying previous steps...")
+        self.status_var.set("Replaying...")
+        self._set_session_buttons_enabled(True)
+        self._current_input_type = None
+        self._current_init = None
+        self._current_io_context = None
+        self._last_call_answer = None
+        self._last_call_io_context = None
+        self._last_question_shown = None
+        self._history = list(target_history)
+        self._replay_queue = list(target_history)
+        self._update_undo_button_state()
+
+        self.shared_q = queue.Queue()
+        self.broker = InputBroker(self.shared_q)
+        set_current_broker(self.broker)
+
+        self.worker = threading.Thread(target=run_tool, args=(self.broker,), daemon=True)
+        self.worker.start()
+
+    def _update_undo_button_state(self) -> None:
+        self.undo_btn.config(state="normal" if self._history else "disabled")
+
+    def on_exit_tool(self) -> None:
+        self.on_close()
 
     def _set_session_buttons_enabled(self, enabled: bool) -> None:
         self.exit_btn.config(state="normal" if enabled else "disabled")
@@ -505,12 +633,17 @@ class VerityNativeGUI:
         self.root.after(30, self._poll_queue)
 
     def _handle_print(self, msg, colour, end) -> None:
+        if msg.strip() in SUPPRESSED_INTRO_LINES:
+            return
         if colour == "green":
             m = AUTOFILL_RE.search(msg)
             if m:
-                value = m.group(1)
-                label = BODY_LABELS.get(value, value)
-                self._append_log(f"> {label} <- (auto-filled)\n", "cyan")
+                side_text, value = m.group(1), m.group(2)
+                io_context = "inside" if side_text == "Inside wall" else "outside"
+                label = body_2d_label(value) if io_context == "inside" else BODY_LABELS.get(value, value)
+                short = short_prompt_label("r", io_context)
+                self._append_log(f"> {short}: {label} <- (auto-filled)\n", "cyan")
+                self._last_call_io_context = io_context
                 return
         self._append_log(msg + end, colour)
 
@@ -523,9 +656,30 @@ class VerityNativeGUI:
     # ------------------------------------------------------------- input --
 
     def _show_question(self, input_type, prompt, ref, is_optional) -> None:
+        previous_question = self._last_question_shown
         self._current_input_type = input_type
         self._current_io_context = "inside" if "Inside" in prompt else "outside"
+        self._last_question_shown = (input_type, self._current_io_context)
         self._clear_input_frame()
+
+        if input_type in ("l", "m", "r"):
+            if self._last_call_io_context == "inside" and self._current_io_context == "outside":
+                self._append_log("\n", None)
+            self._last_call_io_context = self._current_io_context
+
+        if self._replay_queue and self._replay_queue[0]["input_type"] == input_type:
+            entry = self._replay_queue.pop(0)
+            self.question_label.config(
+                text=f"Replaying previous steps... ({len(self._replay_queue)} left)"
+            )
+            self._finalize_answer(entry["value"], entry.get("label"))
+            return
+        if self._replay_queue:
+            # Defensive: the recorded history no longer matches what the
+            # (deterministic) tool is actually asking -- abort the replay
+            # rather than risk feeding a wrong answer, and let the rest of
+            # this and all further questions be asked live instead.
+            self._replay_queue = []
 
         required_letter = required_init_letter(input_type, self._current_init)
         label_text = clean_prompt(prompt)
@@ -535,6 +689,8 @@ class VerityNativeGUI:
 
         if input_type == "init":
             options = [(p.upper(), p) for p in INIT_OPTIONS]
+        elif input_type in ("l", "m", "r") and self._current_io_context == "inside":
+            options = [(body_2d_label(k), k) for k in ref.keys()]
         else:
             label_map = LABEL_MAPS.get(input_type, {})
             options = [
@@ -548,13 +704,26 @@ class VerityNativeGUI:
         disabled_values = compute_disabled_values(
             input_type, options, required_letter, self._current_init,
             self._current_io_context, self._last_call_answer, _shape_key_order,
+            previous_question,
         )
 
         self._render_option_buttons(options, disabled_values)
 
     def _show_yesno(self, prompt) -> None:
         self._current_input_type = "yesno"
+        self._last_question_shown = ("yesno", self._current_io_context)
         self._clear_input_frame()
+
+        if self._replay_queue and self._replay_queue[0]["input_type"] == "yesno":
+            entry = self._replay_queue.pop(0)
+            self.question_label.config(
+                text=f"Replaying previous steps... ({len(self._replay_queue)} left)"
+            )
+            self._finalize_answer(entry["value"], entry.get("label"))
+            return
+        if self._replay_queue:
+            self._replay_queue = []
+
         self.question_label.config(text=clean_prompt(prompt))
         options = [("Yes, restart", "y"), ("No, end session", "n")]
         self._render_option_buttons(options)
@@ -579,8 +748,46 @@ class VerityNativeGUI:
             self.input_buttons_frame.grid_columnconfigure(c, weight=1)
 
     def _answer(self, value, display_label=None) -> None:
+        self._history.append({
+            "input_type": self._current_input_type,
+            "value": value,
+            "label": display_label,
+        })
+        self._update_undo_button_state()
+
+        if self._current_input_type == "yesno" and value == "y":
+            # "Yes, restart" at the very end of a playthrough now behaves
+            # exactly like clicking "New Session": a full reset (log,
+            # tracked state, fresh worker thread) instead of looping back
+            # inside the same thread, which left the log and internal
+            # state trackers (e.g. the last answered call) stale across
+            # playthroughs. History is kept (not reset) so Undo can still
+            # step back across the restart boundary.
+            self.start_new_session(reset_history=False)
+            return
+
+        if self._current_input_type == "yesno" and value == "n":
+            # "No, end session" now closes the whole app (same as the
+            # window's X button / "Exit Tool"), instead of just ending the
+            # worker thread and leaving an idle window behind.
+            if self.broker:
+                self.broker.send_answer("n")
+            self.root.destroy()
+            return
+
+        self._finalize_answer(value, display_label)
+
+    def _finalize_answer(self, value, display_label=None) -> None:
+        """Core 'send this answer onward' logic, shared by live button
+        clicks (via _answer) and by auto-replayed history entries after an
+        Undo (via _show_question/_show_yesno) -- so a replayed transcript
+        looks identical to the original one."""
         if display_label:
-            self._append_log(f"> {display_label}\n", "echo")
+            short = short_prompt_label(self._current_input_type, self._current_io_context)
+            tag = "call_echo" if self._current_input_type in ("l", "m", "r") else "echo"
+            self._append_log(f"> {short}: {display_label}\n", tag)
+        if self._current_input_type == "self_pos":
+            self._append_log("\n", None)
         if self._current_input_type == "init":
             self._current_init = value
         if self._current_input_type in ("l", "m", "r"):
@@ -597,8 +804,7 @@ class VerityNativeGUI:
     # ------------------------------------------------------------ output --
 
     def _append_log(self, text, colour_name) -> None:
-        hexcolor = COLOUR_NAME_TO_HEX.get(colour_name)
-        tag = colour_name if hexcolor else None
+        tag = colour_name if colour_name in VALID_LOG_TAGS else None
         self.output.configure(state="normal")
         if tag:
             self.output.insert("end", text, tag)
