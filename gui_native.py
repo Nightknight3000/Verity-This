@@ -473,7 +473,9 @@ class VerityNativeGUI:
         self._replay_queue: "list[dict]" = []   # answers still being auto-replayed after an Undo
 
         install_patches()
+        self.always_on_top_var = tk.BooleanVar(value=True)
         self._build_ui()
+        self.root.attributes("-topmost", self.always_on_top_var.get())
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
         self.root.after(30, self._poll_queue)
@@ -508,6 +510,14 @@ class VerityNativeGUI:
         toolbtn(toolbar, "\u25B6 New Session", self.start_new_session)
         self.undo_btn = toolbtn(toolbar, "\u2B05 Undo", self.on_undo)
         self.exit_btn = toolbtn(toolbar, "\u2715 Exit tool", self.on_exit_tool)
+
+        self.always_on_top_check = tk.Checkbutton(
+            toolbar, text="Always on top", variable=self.always_on_top_var,
+            command=self.on_toggle_always_on_top,
+            bg=BG, fg=FG_DEFAULT, selectcolor=BTN_BG, activebackground=BG,
+            activeforeground=FG_DEFAULT, relief="flat",
+        )
+        self.always_on_top_check.pack(side="left", padx=4)
 
         self.output = scrolledtext.ScrolledText(
             self.root, wrap="word", bg=BG, fg=FG_DEFAULT, insertbackground=FG_DEFAULT,
@@ -819,6 +829,9 @@ class VerityNativeGUI:
         self.output.configure(state="disabled")
 
     # -------------------------------------------------------------- misc --
+
+    def on_toggle_always_on_top(self) -> None:
+        self.root.attributes("-topmost", self.always_on_top_var.get())
 
     def on_close(self) -> None:
         if self.broker:
