@@ -368,12 +368,12 @@ def is_num_doubles_option_allowed(value: str, call_value: "str | None") -> bool:
 
 def compute_disabled_values(input_type, options, required_letter, current_init,
                             io_context, last_call_answer, shape_key_order,
-                            previous_question=None):
+                            previous_question=None, current_mode=None):
     """Pure decision logic for which option *values* should be disabled for
     a given question. Deliberately does nothing (returns an empty set) for
-    any input_type other than the body-call fields 'l', 'm', 'r' and
-    'number_of_doubles' -- mode, n_strat, self_pos and init are never
-    touched here.
+    any input_type other than the body-call fields 'l', 'm', 'r',
+    'number_of_doubles', and the 'self_pos' skip option -- mode, n_strat,
+    and init are never touched here.
 
     previous_question, if given, is the (input_type, io_context) of the
     question shown immediately before this one -- used to make sure a
@@ -381,6 +381,14 @@ def compute_disabled_values(input_type, options, required_letter, current_init,
     truly asked right before it in the same call-group, not left over from
     an earlier round's single-position call (e.g. 'left' in round 1
     followed by an unrelated 'middle' in round 2)."""
+    if input_type == "self_pos":
+        # Mirrors verity_this.py's own _await_input check: in 'normal' mode
+        # a position is mandatory, so 'Not specified / skip' would just
+        # bounce back with a red error -- disable it up front instead.
+        if current_mode == "normal":
+            return {value for _, value in options if value is None}
+        return set()
+
     if input_type == "number_of_doubles":
         call_value = None
         if last_call_answer is not None and last_call_answer[0] in ("l", "m", "r"):
@@ -571,6 +579,7 @@ class VerityNativeGUI:
         self.worker: "threading.Thread | None" = None
         self._current_input_type: "str | None" = None
         self._current_init: "str | None" = None
+        self._current_mode: "str | None" = None
         self._current_io_context: "str | None" = None
         self._last_call_answer: "tuple | None" = None  # (input_type, io_context, value)
         self._last_question_shown: "tuple | None" = None  # (input_type, io_context)
@@ -771,6 +780,7 @@ class VerityNativeGUI:
         self._set_session_buttons_enabled(True)
         self._current_input_type = None
         self._current_init = None
+        self._current_mode = None
         self._current_io_context = None
         self._last_call_answer = None
         self._last_call_io_context = None
@@ -805,6 +815,7 @@ class VerityNativeGUI:
         self._set_session_buttons_enabled(True)
         self._current_input_type = None
         self._current_init = None
+        self._current_mode = None
         self._current_io_context = None
         self._last_call_answer = None
         self._last_call_io_context = None
@@ -928,7 +939,7 @@ class VerityNativeGUI:
         disabled_values = compute_disabled_values(
             input_type, options, required_letter, self._current_init,
             self._current_io_context, self._last_call_answer, _shape_key_order,
-            previous_question,
+            previous_question, self._current_mode,
         )
 
         self._render_option_buttons(options, disabled_values)
@@ -1017,6 +1028,8 @@ class VerityNativeGUI:
             self._append_log("\n", None)
         if self._current_input_type == "init":
             self._current_init = value
+        if self._current_input_type == "mode":
+            self._current_mode = value
         if self._current_input_type in ("l", "m", "r"):
             self._last_call_answer = (self._current_input_type, self._current_io_context, value)
         self._clear_input_frame()
