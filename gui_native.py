@@ -43,7 +43,7 @@ import sys
 import threading
 import traceback
 import tkinter as tk
-from tkinter import scrolledtext
+from tkinter import scrolledtext, ttk
 
 
 # ---------------------------------------------------------------------------
@@ -57,36 +57,143 @@ if REPO_ROOT not in sys.path:
 
 
 # ---------------------------------------------------------------------------
-# Visual style
+# Visual style -- a small set of named themes, switchable at runtime from
+# the "Theme" selector in the header. Every theme has the same keys, so
+# _build_ui / _render_option_buttons / _apply_theme never special-case a
+# particular theme's shape -- only its colour values differ.
 # ---------------------------------------------------------------------------
 
-BG = "#1e1e1e"
-FG_DEFAULT = "#e0e0e0"
-PANEL_BG = "#242424"
-BTN_BG = "#333333"
-BTN_ACTIVE_BG = "#4fa8ff"
 FONT = ("Consolas", 11)
 FONT_BOLD = ("Consolas", 11, "bold")
 
-# Mirrors src/utils/constants.py COLOURS -- print_colour receives these
-# names directly (no ANSI parsing needed, unlike a subprocess wrapper).
-COLOUR_NAME_TO_HEX = {
-    "default": None,
-    "lightred": "#ff8a80",
-    "green": "#69f0ae",
-    "yellow": "#ffd54f",
-    "blue": "#64b5f6",
-    "purple": "#ce93d8",
-    "cyan": "#4dd0e1",
-    "grey": "#9e9e9e",
-    "red": "#ff5252",
-    "heavygreen": "#00e676",
+THEMES = {
+    "Default": {
+        "bg": "#1e1e1e",
+        "panel_bg": "#242424",
+        "fg": "#e0e0e0",
+        "btn_bg": "#333333",
+        "btn_active_bg": "#4fa8ff",
+        "btn_active_fg": "#0a0a0a",
+        "disabled_fg": "#5a5a5a",
+        "toolbar_active_bg": "#444444",
+        "title_fg": "#ffd54f",
+        "status_fg": "#9e9e9e",
+        "question_fg": "#ffd54f",
+        "echo_fg": "#ffffff",
+        "system_fg": "#757575",
+        # Mirrors src/utils/constants.py COLOURS -- print_colour receives
+        # these names directly (no ANSI parsing needed, unlike a subprocess
+        # wrapper).
+        "colours": {
+            "default": None,
+            "lightred": "#ff8a80",
+            "green": "#69f0ae",
+            "yellow": "#ffd54f",
+            "blue": "#64b5f6",
+            "purple": "#ce93d8",
+            "cyan": "#4dd0e1",
+            "grey": "#9e9e9e",
+            "red": "#ff5252",
+            "heavygreen": "#00e676",
+        },
+        "texture": None,
+    },
+    "Solarized Dark": {
+        "bg": "#002b36",
+        "panel_bg": "#073642",
+        "fg": "#93a1a1",
+        "btn_bg": "#073642",
+        "btn_active_bg": "#268bd2",
+        "btn_active_fg": "#00212b",
+        "disabled_fg": "#3a5a63",
+        "toolbar_active_bg": "#0e4a58",
+        "title_fg": "#b58900",
+        "status_fg": "#586e75",
+        "question_fg": "#cb4b16",
+        "echo_fg": "#eee8d5",
+        "system_fg": "#586e75",
+        "colours": {
+            "default": None,
+            "lightred": "#dc322f",
+            "green": "#859900",
+            "yellow": "#b58900",
+            "blue": "#268bd2",
+            "purple": "#d33682",
+            "cyan": "#2aa198",
+            "grey": "#586e75",
+            "red": "#dc322f",
+            "heavygreen": "#859900",
+        },
+        "texture": {"kind": "spectrum", "colours": [
+            "#b58900", "#cb4b16", "#dc322f", "#d33682",
+            "#6c71c4", "#268bd2", "#2aa198", "#859900",
+        ]},
+    },
+    "Warm Paper": {
+        "bg": "#f5ecd9",
+        "panel_bg": "#ece0c8",
+        "fg": "#3b2f2f",
+        "btn_bg": "#e4d5b7",
+        "btn_active_bg": "#c97b4a",
+        "btn_active_fg": "#fff8ec",
+        "disabled_fg": "#b0a48a",
+        "toolbar_active_bg": "#d8c49e",
+        "title_fg": "#8a5a2b",
+        "status_fg": "#7a6a55",
+        "question_fg": "#a13d2b",
+        "echo_fg": "#2b2b2b",
+        "system_fg": "#7a6a55",
+        "colours": {
+            "default": None,
+            "lightred": "#c0392b",
+            "green": "#4e7a33",
+            "yellow": "#b8860b",
+            "blue": "#2b6cb0",
+            "purple": "#7b4397",
+            "cyan": "#1f7a7a",
+            "grey": "#6b6252",
+            "red": "#a83232",
+            "heavygreen": "#2f5d1f",
+        },
+        "texture": {"kind": "rule", "colour": "#c9b791"},
+    },
+    "Neon Cyberpunk": {
+        "bg": "#0a0a12",
+        "panel_bg": "#12121e",
+        "fg": "#d6d6f5",
+        "btn_bg": "#1b1b2e",
+        "btn_active_bg": "#ff2fd0",
+        "btn_active_fg": "#0a0a12",
+        "disabled_fg": "#3a3a52",
+        "toolbar_active_bg": "#2a2a44",
+        "title_fg": "#00f0ff",
+        "status_fg": "#7a7a9a",
+        "question_fg": "#ff2fd0",
+        "echo_fg": "#ffffff",
+        "system_fg": "#7a7a9a",
+        "colours": {
+            "default": None,
+            "lightred": "#ff5c8a",
+            "green": "#39ff88",
+            "yellow": "#faff00",
+            "blue": "#3ba7ff",
+            "purple": "#b026ff",
+            "cyan": "#00f0ff",
+            "grey": "#8888aa",
+            "red": "#ff2b4e",
+            "heavygreen": "#00ff9d",
+        },
+        "texture": {"kind": "scanline", "colour": "#16162a", "accent": "#00f0ff"},
+    },
 }
 
 # Every Text-widget tag actually configured in _build_ui: the colour tags
 # with a real hex value, plus the two special tags ("default" has no hex
 # and is therefore never configured as a tag -- it just means "no tag").
-VALID_LOG_TAGS = {name for name, hexcolor in COLOUR_NAME_TO_HEX.items() if hexcolor} | {"echo", "system", "call_echo"}
+# All themes share the same colour *names*, so any theme's dict will do.
+VALID_LOG_TAGS = {
+    name for name, hexcolor in THEMES["Default"]["colours"].items() if hexcolor
+} | {"echo", "system", "call_echo"}
 
 ANSI_RE = re.compile(r"\x1b\[\d+m")
 
@@ -458,7 +565,6 @@ class VerityNativeGUI:
         self.root.title("Verity This!")
         self.root.geometry("920x680")
         self.root.minsize(680, 480)
-        self.root.configure(bg=BG)
 
         self.shared_q: "queue.Queue" = queue.Queue()
         self.broker: "InputBroker | None" = None
@@ -471,10 +577,20 @@ class VerityNativeGUI:
         self._last_call_io_context: "str | None" = None
         self._history: "list[dict]" = []       # confirmed answers, in order, for Undo
         self._replay_queue: "list[dict]" = []   # answers still being auto-replayed after an Undo
+        self._last_options: "list | None" = None       # options shown by the current
+        self._last_disabled: "frozenset" = frozenset()  # question, if any -- for theme re-render
 
         install_patches()
+        self._theme_name = "Default"
+        self._theme = THEMES[self._theme_name]
+        self._ttk_style = ttk.Style()
+        try:
+            self._ttk_style.theme_use("clam")  # only 'clam' honours custom Combobox colours
+        except tk.TclError:
+            pass
         self.always_on_top_var = tk.BooleanVar(value=True)
         self._build_ui()
+        self._apply_theme(self._theme_name)
         self.root.attributes("-topmost", self.always_on_top_var.get())
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -484,64 +600,162 @@ class VerityNativeGUI:
     # ---------------------------------------------------------------- UI --
 
     def _build_ui(self) -> None:
-        header = tk.Frame(self.root, bg=BG)
-        header.pack(fill="x", padx=10, pady=(10, 4))
-        tk.Label(
-            header, text="Verity This!", fg="#ffd54f", bg=BG,
-            font=("Consolas", 16, "bold"),
-        ).pack(side="left")
-        self.status_var = tk.StringVar(value="Starting...")
-        tk.Label(header, textvariable=self.status_var, fg="#9e9e9e", bg=BG, font=FONT).pack(
-            side="right"
-        )
+        theme = self._theme
 
-        toolbar = tk.Frame(self.root, bg=BG)
-        toolbar.pack(fill="x", padx=10)
+        self.header = tk.Frame(self.root, bg=theme["bg"])
+        self.header.pack(fill="x", padx=10, pady=(10, 4))
+        self.title_label = tk.Label(
+            self.header, text="Verity This!", font=("Consolas", 16, "bold"),
+        )
+        self.title_label.pack(side="left")
+
+        # Packed right-to-left so the theme selector lands in the true
+        # top-right corner, with the status text just to its left.
+        self.theme_frame = tk.Frame(self.header)
+        self.theme_caption = tk.Label(self.theme_frame, text="Theme:", font=FONT)
+        self.theme_caption.pack(side="left", padx=(0, 4))
+        self.theme_var = tk.StringVar(value=self._theme_name)
+        self.theme_combo = ttk.Combobox(
+            self.theme_frame, textvariable=self.theme_var, values=list(THEMES.keys()),
+            state="readonly", width=15, font=FONT, style="Themed.TCombobox",
+        )
+        self.theme_combo.pack(side="left")
+        self.theme_combo.bind("<<ComboboxSelected>>", self._on_theme_selected)
+        self.theme_frame.pack(side="right")
+
+        self.status_var = tk.StringVar(value="Starting...")
+        self.status_label = tk.Label(self.header, textvariable=self.status_var, font=FONT)
+        self.status_label.pack(side="right", padx=(0, 10))
+
+        # Decorative texture strip -- purely cosmetic, lives in its own
+        # fixed-height canvas so it never overlaps any text and switching
+        # themes never causes the rest of the layout to jump.
+        self.texture_canvas = tk.Canvas(self.root, height=8, highlightthickness=0)
+        self.texture_canvas.pack(fill="x", padx=10)
+        self.texture_canvas.bind("<Configure>", self._draw_texture)
+
+        self.toolbar = tk.Frame(self.root)
+        self.toolbar.pack(fill="x", padx=10, pady=(4, 0))
 
         def toolbtn(parent, text, cmd, side="left"):
-            b = tk.Button(
-                parent, text=text, command=cmd, bg=BTN_BG, fg=FG_DEFAULT,
-                activebackground="#444444", activeforeground=FG_DEFAULT,
-                relief="flat", padx=8,
-            )
+            b = tk.Button(parent, text=text, command=cmd, relief="flat", padx=8)
             b.pack(side=side, padx=4)
             return b
 
-        toolbtn(toolbar, "\u25B6 New Session", self.start_new_session)
-        self.undo_btn = toolbtn(toolbar, "\u2B05 Undo", self.on_undo)
-        self.exit_btn = toolbtn(toolbar, "\u2715 Exit tool", self.on_exit_tool)
+        self.new_session_btn = toolbtn(self.toolbar, "\u25B6 New Session", self.start_new_session)
+        self.undo_btn = toolbtn(self.toolbar, "\u2B05 Undo", self.on_undo)
+        self.exit_btn = toolbtn(self.toolbar, "\u2715 Exit tool", self.on_exit_tool)
 
         self.always_on_top_check = tk.Checkbutton(
-            toolbar, text="Always on top", variable=self.always_on_top_var,
-            command=self.on_toggle_always_on_top,
-            bg=BG, fg=FG_DEFAULT, selectcolor=BTN_BG, activebackground=BG,
-            activeforeground=FG_DEFAULT, relief="flat",
+            self.toolbar, text="Always on top", variable=self.always_on_top_var,
+            command=self.on_toggle_always_on_top, relief="flat",
         )
         self.always_on_top_check.pack(side="left", padx=4)
 
         self.output = scrolledtext.ScrolledText(
-            self.root, wrap="word", bg=BG, fg=FG_DEFAULT, insertbackground=FG_DEFAULT,
+            self.root, wrap="word", insertbackground=theme["fg"],
             font=FONT, state="disabled", relief="flat", padx=10, pady=8, height=16,
         )
         self.output.pack(fill="both", expand=True, padx=10, pady=(8, 4))
-        for name, hexcolor in COLOUR_NAME_TO_HEX.items():
-            if hexcolor:
-                self.output.tag_configure(name, foreground=hexcolor)
-        self.output.tag_configure("echo", foreground="#ffffff", font=FONT_BOLD)
-        self.output.tag_configure("call_echo", foreground=COLOUR_NAME_TO_HEX["green"], font=FONT_BOLD)
-        self.output.tag_configure("system", foreground="#757575", font=("Consolas", 10, "italic"))
 
-        question_panel = tk.Frame(self.root, bg=PANEL_BG)
-        question_panel.pack(fill="x", padx=10, pady=(0, 10))
+        self.question_panel = tk.Frame(self.root)
+        self.question_panel.pack(fill="x", padx=10, pady=(0, 10))
 
         self.question_label = tk.Label(
-            question_panel, text="Starting...", fg="#ffd54f", bg=PANEL_BG,
+            self.question_panel, text="Starting...",
             font=FONT_BOLD, anchor="w", justify="left", wraplength=860,
         )
         self.question_label.pack(fill="x", padx=10, pady=(8, 4))
 
-        self.input_buttons_frame = tk.Frame(question_panel, bg=PANEL_BG)
+        self.input_buttons_frame = tk.Frame(self.question_panel)
         self.input_buttons_frame.pack(fill="x", padx=10, pady=(0, 10))
+
+    # ----------------------------------------------------------- theming --
+
+    def _draw_texture(self, event=None) -> None:
+        canvas = self.texture_canvas
+        theme = self._theme
+        canvas.configure(bg=theme["bg"])
+        canvas.delete("all")
+        spec = theme.get("texture")
+        if not spec:
+            return
+        w = canvas.winfo_width()
+        if spec["kind"] == "spectrum":
+            colours = spec["colours"]
+            seg = max(1, w // len(colours))
+            for i, colour in enumerate(colours):
+                x1 = i * seg
+                x2 = (i + 1) * seg if i < len(colours) - 1 else w
+                canvas.create_rectangle(x1, 0, x2, 4, fill=colour, width=0)
+        elif spec["kind"] == "rule":
+            canvas.create_line(0, 0, w, 0, fill=spec["colour"], width=1)
+            canvas.create_line(0, 2, w, 2, fill=spec["colour"], width=1)
+        elif spec["kind"] == "scanline":
+            for y in range(0, 6, 2):
+                canvas.create_line(0, y, w, y, fill=spec["colour"], width=1)
+            canvas.create_line(0, 7, w, 7, fill=spec["accent"], width=1)
+
+    def _on_theme_selected(self, event=None) -> None:
+        self._apply_theme(self.theme_var.get())
+
+    def _apply_theme(self, name: str) -> None:
+        theme = THEMES[name]
+        self._theme_name = name
+        self._theme = theme
+        self.theme_var.set(name)
+
+        self.root.configure(bg=theme["bg"])
+        self.header.configure(bg=theme["bg"])
+        self.title_label.configure(fg=theme["title_fg"], bg=theme["bg"])
+        self.theme_frame.configure(bg=theme["bg"])
+        self.theme_caption.configure(fg=theme["status_fg"], bg=theme["bg"])
+        self.status_label.configure(fg=theme["status_fg"], bg=theme["bg"])
+
+        self._ttk_style.configure(
+            "Themed.TCombobox",
+            fieldbackground=theme["btn_bg"], background=theme["btn_bg"],
+            foreground=theme["fg"], arrowcolor=theme["fg"],
+            selectbackground=theme["btn_bg"], selectforeground=theme["fg"],
+        )
+        self._ttk_style.map(
+            "Themed.TCombobox",
+            fieldbackground=[("readonly", theme["btn_bg"])],
+            foreground=[("readonly", theme["fg"])],
+        )
+        self.root.option_add("*TCombobox*Listbox.background", theme["btn_bg"])
+        self.root.option_add("*TCombobox*Listbox.foreground", theme["fg"])
+        self.root.option_add("*TCombobox*Listbox.selectBackground", theme["btn_active_bg"])
+
+        self.toolbar.configure(bg=theme["bg"])
+        for btn in (self.new_session_btn, self.undo_btn, self.exit_btn):
+            btn.configure(
+                bg=theme["btn_bg"], fg=theme["fg"],
+                activebackground=theme["toolbar_active_bg"], activeforeground=theme["fg"],
+            )
+        self.always_on_top_check.configure(
+            bg=theme["bg"], fg=theme["fg"], selectcolor=theme["btn_bg"],
+            activebackground=theme["bg"], activeforeground=theme["fg"],
+        )
+
+        self.output.configure(bg=theme["bg"], fg=theme["fg"], insertbackground=theme["fg"])
+        for cname, hexcolor in theme["colours"].items():
+            if hexcolor:
+                self.output.tag_configure(cname, foreground=hexcolor)
+        self.output.tag_configure("echo", foreground=theme["echo_fg"], font=FONT_BOLD)
+        self.output.tag_configure("call_echo", foreground=theme["colours"]["green"], font=FONT_BOLD)
+        self.output.tag_configure("system", foreground=theme["system_fg"], font=("Consolas", 10, "italic"))
+
+        self.question_panel.configure(bg=theme["panel_bg"])
+        self.question_label.configure(fg=theme["question_fg"], bg=theme["panel_bg"])
+        self.input_buttons_frame.configure(bg=theme["panel_bg"])
+
+        self._draw_texture()
+
+        if self._last_options is not None:
+            options, disabled = self._last_options, self._last_disabled
+            self._clear_input_frame()
+            self._render_option_buttons(options, disabled)
 
     # ------------------------------------------------------------ session --
 
@@ -739,6 +953,9 @@ class VerityNativeGUI:
         self._render_option_buttons(options)
 
     def _render_option_buttons(self, options, disabled_values=frozenset()) -> None:
+        self._last_options = options
+        self._last_disabled = disabled_values
+        theme = self._theme
         max_len = max((len(lbl) for lbl, _ in options), default=10)
         cols = 2 if max_len > 16 else 3
         cols = max(1, min(cols, len(options)))
@@ -746,8 +963,8 @@ class VerityNativeGUI:
         for i, (label, value) in enumerate(options):
             btn = tk.Button(
                 self.input_buttons_frame, text=label, anchor="w",
-                bg=BTN_BG, fg=FG_DEFAULT, disabledforeground="#5a5a5a",
-                activebackground=BTN_ACTIVE_BG, activeforeground="#0a0a0a",
+                bg=theme["btn_bg"], fg=theme["fg"], disabledforeground=theme["disabled_fg"],
+                activebackground=theme["btn_active_bg"], activeforeground=theme["btn_active_fg"],
                 relief="flat", padx=10, pady=8,
                 state="disabled" if value in disabled_values else "normal",
                 command=lambda v=value, l=label: self._answer(v, l),
@@ -810,6 +1027,8 @@ class VerityNativeGUI:
     def _clear_input_frame(self) -> None:
         for child in self.input_buttons_frame.winfo_children():
             child.destroy()
+        self._last_options = None
+        self._last_disabled = frozenset()
 
     # ------------------------------------------------------------ output --
 
