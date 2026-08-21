@@ -14,22 +14,37 @@ The all-in-one guide to Destiny 2's *Salvation's Edge* 4th encounter, **Verity**
 - Triumph and challenge-mode guidance
 - Simple colour-coded console interface
 - Built-in `help`, `restart`, and `exit` commands available at any time
+- Optional point-and-click **GUI version** (`bin/windows/verity_this_gui.exe`) with switchable themes, English/German language support, and Undo — see [GUI Version](#gui-version) below
 
 ## Requirements
 
-**None** — if you run the tool via the provided Windows executable (`bin/windows`), there is nothing else to install.
+**None** — if you run the tool via one of the provided Windows executables (`bin/windows`), there is nothing else to install.
 
 If you'd rather run it from source, you'll need:
 
 - Python 3.9+
+- Tkinter (only for the GUI version — included with most standard Python installs)
 
 ## Getting Started
 
 ### Option 1: Run the executable (Windows)
 
 1. Download the repository or the latest [release](https://github.com/Nightknight3000/Verity-This/releases).
-2. Run the executable found in `bin/windows`.
-3. Follow the on-screen prompts.
+2. Navigate into the `bin/windows` folder:
+   ```bash
+   cd bin\windows
+   ```
+3. Run one of the two executables found there:
+   | Executable | Starts |
+   |---|---|
+   | `verity_this.exe` | The console interface |
+   | `verity_this_gui.exe` | The point-and-click [GUI version](#gui-version) |
+
+   Double-click it in Explorer, or launch it from a terminal already inside `bin\windows`:
+   ```bash
+   .\verity_this_gui.exe
+   ```
+4. Follow the on-screen prompts.
 
 ### Option 2: Run from source
 
@@ -37,6 +52,12 @@ If you'd rather run it from source, you'll need:
 git clone https://github.com/Nightknight3000/Verity-This.git
 cd Verity-This
 python verity_this.py
+```
+
+To run the GUI version from source instead:
+
+```bash
+python gui_native.py
 ```
 
 ## Usage
@@ -58,16 +79,30 @@ At any point during the prompts, you can type:
 | `restart` | Restart the application |
 | `exit` | Quit the application |
 
+## GUI Version
+
+`verity_this_gui.exe` (or `python gui_native.py` from source) gives you the exact same guided flow as the console version, but as a point-and-click window instead of typed commands:
+
+- **New Session** / **Undo** / **Exit tool** buttons, plus an **Always on top** toggle
+- Every question is answered by clicking a button instead of typing — invalid or out-of-order options are greyed out automatically
+- A **Theme** dropdown (`Default`, `Solarized Dark`, `Warm Paper`, `Neon Cyberpunk`)
+- A **Language** dropdown (`English`, `Deutsch`)
+
+Whichever Theme and Language you last selected becomes the default the next time you open the GUI — no need to reselect them every session.
+
 ## Project Structure
 
 ```
 Verity-This/
-├── bin/windows/     # Standalone Windows executable
+├── bin/windows/       # Standalone Windows executables
+│   ├── verity_this.exe       # Console interface
+│   └── verity_this_gui.exe   # Point-and-click GUI
 ├── src/
-│   ├── algorithm/   # Core instruction-generation logic
-│   ├── io/          # Input handling and validation
-│   └── utils/       # Constants and shared helpers (e.g. coloured console output)
-├── verity_this.py   # Entry point
+│   ├── algorithm/     # Core instruction-generation logic
+│   ├── io/            # Input handling and validation
+│   └── utils/         # Constants and shared helpers (e.g. coloured console output, GUI text/labels)
+├── verity_this.py     # Console entry point
+├── gui_native.py      # GUI entry point
 └── LICENSE
 ```
 
