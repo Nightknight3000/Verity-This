@@ -94,7 +94,7 @@ SKIP_EXCEPTED_TYPES = ["mode", "n_strat"]
 # dropdown changes, so the next run of the GUI starts in that language.
 # ---------------------------------------------------------------------------
 
-DEFAULT_LANGUAGE = "de"
+DEFAULT_LANGUAGE = "en"
 
 LANGUAGE_NAMES = {
     "en": "English",
@@ -106,7 +106,7 @@ LANGUAGE_NAMES = {
 # name of the theme to start in is kept here, next to DEFAULT_LANGUAGE, so
 # gui_native.persist_default_theme() can rewrite it the same way whenever
 # the "Theme" dropdown changes.
-DEFAULT_THEME = "Neon Cyberpunk"
+DEFAULT_THEME = "Default"
 
 # GUI chrome -- toolbar/status/dropdown/button text that isn't sourced from
 # the underlying tool at all.
