@@ -64,8 +64,19 @@ if REPO_ROOT not in sys.path:
 # particular theme's shape -- only its colour values differ.
 # ---------------------------------------------------------------------------
 
-FONT = ("Consolas", 11)
-FONT_BOLD = ("Consolas", 11, "bold")
+# Font sizes below are all expressed relative to this base window size and
+# scaled live by VerityNativeGUI._font()/_rescale() as the window is
+# resized (see "Responsive scaling" further down), so the GUI's content
+# stays legible -- never clipped, never swimming in empty space -- at any
+# window size between MIN_SCALE and MAX_SCALE of it.
+FONT_FAMILY = "Consolas"
+BASE_FONT_SIZE = 11
+BASE_TITLE_SIZE = 16
+BASE_SMALL_SIZE = 10
+BASE_WIDTH = 920
+BASE_HEIGHT = 680
+MIN_SCALE = 0.25
+MAX_SCALE = 2.4
 
 THEMES = {
     "Default": {
@@ -674,7 +685,13 @@ class VerityNativeGUI:
         self.root = root
         self.root.title("Verity This!")
         self.root.geometry("920x680")
-        self.root.minsize(680, 480)
+        # Without an explicit minsize, Tk falls back to auto-enforcing
+        # whatever size its children currently need to render without
+        # clipping -- which silently reintroduces a "minimum size" the
+        # window can't be dragged below. Setting it this low overrides that
+        # and hands the floor entirely to _rescale()'s font shrinking
+        # instead, so the window can be shrunk almost arbitrarily far.
+        self.root.minsize(120, 90)
 
         self.shared_q: "queue.Queue" = queue.Queue()
         self.broker: "InputBroker | None" = None
@@ -696,6 +713,8 @@ class VerityNativeGUI:
         self._status_key: str = "starting"               # which UI_TEXT entry status_var shows
         self._question_static_key = None                 # non-interactive question_label state:
                                                            # a UI_TEXT key, or ("replaying_n", n)
+        self._scale: float = 1.0                         # current content scale, see _rescale()
+        self._resize_job: "str | None" = None             # debounce handle for <Configure>
 
         install_patches()
         persisted = _load_persisted_settings()  # {} unless running frozen
@@ -712,9 +731,65 @@ class VerityNativeGUI:
         self._apply_theme(self._theme_name)
         self.root.attributes("-topmost", self.always_on_top_var.get())
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.root.bind("<Configure>", self._on_root_configure)
 
         self.root.after(30, self._poll_queue)
         self.start_new_session()
+
+    # ----------------------------------------------------- responsive scale --
+
+    def _font(self, base_size: int = BASE_FONT_SIZE, bold: bool = False, italic: bool = False) -> tuple:
+        """A Consolas font tuple sized for the current window scale. Every
+        font in the GUI is built through here (instead of a fixed tuple) so
+        _apply_scale() can grow or shrink all of them together."""
+        size = max(1, round(base_size * self._scale))
+        style = " ".join(s for s, on in (("bold", bold), ("italic", italic)) if on)
+        return (FONT_FAMILY, size, style) if style else (FONT_FAMILY, size)
+
+    def _compute_scale(self) -> float:
+        w, h = self.root.winfo_width(), self.root.winfo_height()
+        if w <= 1 or h <= 1:
+            return self._scale
+        scale = min(w / BASE_WIDTH, h / BASE_HEIGHT)
+        return max(MIN_SCALE, min(MAX_SCALE, scale))
+
+    def _on_root_configure(self, event=None) -> None:
+        # The window is resized continuously while the user drags its edge,
+        # firing many <Configure> events per second -- debounce so the
+        # (fairly expensive) full font/button rebuild in _apply_scale()
+        # only runs once resizing has actually settled.
+        if self._resize_job is not None:
+            self.root.after_cancel(self._resize_job)
+        self._resize_job = self.root.after(80, self._rescale)
+
+    def _rescale(self) -> None:
+        self._resize_job = None
+        new_scale = self._compute_scale()
+        if abs(new_scale - self._scale) < 0.02:
+            return
+        self._scale = new_scale
+        self._apply_scale()
+
+    def _apply_scale(self) -> None:
+        self.title_label.configure(font=self._font(BASE_TITLE_SIZE, bold=True))
+        self.theme_caption.configure(font=self._font())
+        self.theme_combo.configure(font=self._font())
+        self.language_caption.configure(font=self._font())
+        self.lang_combo.configure(font=self._font())
+        self.status_label.configure(font=self._font())
+        for btn in (self.new_session_btn, self.undo_btn, self.exit_btn):
+            btn.configure(font=self._font())
+        self.always_on_top_check.configure(font=self._font())
+        self.output.configure(font=self._font())
+        self.output.tag_configure("echo", font=self._font(bold=True))
+        self.output.tag_configure("call_echo", font=self._font(bold=True))
+        self.output.tag_configure("system", font=self._font(BASE_SMALL_SIZE, italic=True))
+        self.question_label.configure(font=self._font(bold=True))
+
+        if self._last_options is not None:
+            options, disabled = self._last_options, self._last_disabled
+            self._clear_input_frame()
+            self._render_option_buttons(options, disabled)
 
     # ---------------------------------------------------------------- UI --
 
@@ -724,7 +799,7 @@ class VerityNativeGUI:
         self.header = tk.Frame(self.root, bg=theme["bg"])
         self.header.pack(fill="x", padx=10, pady=(10, 4))
         self.title_label = tk.Label(
-            self.header, text="Verity This!", font=("Consolas", 16, "bold"),
+            self.header, text="Verity This!", font=self._font(BASE_TITLE_SIZE, bold=True),
         )
         self.title_label.pack(side="left")
 
@@ -732,32 +807,32 @@ class VerityNativeGUI:
         # top-right corner, with the language selector, then the status
         # text, just to its left.
         self.theme_frame = tk.Frame(self.header)
-        self.theme_caption = tk.Label(self.theme_frame, text=UI_TEXT[self._lang]["theme_caption"], font=FONT)
+        self.theme_caption = tk.Label(self.theme_frame, text=UI_TEXT[self._lang]["theme_caption"], font=self._font())
         self.theme_caption.pack(side="left", padx=(0, 4))
         self.theme_var = tk.StringVar(value=self._theme_name)
         self.theme_combo = ttk.Combobox(
             self.theme_frame, textvariable=self.theme_var, values=list(THEMES.keys()),
-            state="readonly", width=15, font=FONT, style="Themed.TCombobox",
+            state="readonly", width=15, font=self._font(), style="Themed.TCombobox",
         )
         self.theme_combo.pack(side="left")
         self.theme_combo.bind("<<ComboboxSelected>>", self._on_theme_selected)
         self.theme_frame.pack(side="right")
 
         self.lang_frame = tk.Frame(self.header)
-        self.language_caption = tk.Label(self.lang_frame, text=UI_TEXT[self._lang]["language_caption"], font=FONT)
+        self.language_caption = tk.Label(self.lang_frame, text=UI_TEXT[self._lang]["language_caption"], font=self._font())
         self.language_caption.pack(side="left", padx=(0, 4))
         self.lang_var = tk.StringVar(value=LANGUAGE_NAMES[self._lang])
         self.lang_combo = ttk.Combobox(
             self.lang_frame, textvariable=self.lang_var,
             values=list(LANGUAGE_NAMES.values()), state="readonly", width=10,
-            font=FONT, style="Themed.TCombobox",
+            font=self._font(), style="Themed.TCombobox",
         )
         self.lang_combo.pack(side="left")
         self.lang_combo.bind("<<ComboboxSelected>>", self._on_language_selected)
         self.lang_frame.pack(side="right", padx=(0, 10))
 
         self.status_var = tk.StringVar(value=UI_TEXT[self._lang]["starting"])
-        self.status_label = tk.Label(self.header, textvariable=self.status_var, font=FONT)
+        self.status_label = tk.Label(self.header, textvariable=self.status_var, font=self._font())
         self.status_label.pack(side="right", padx=(0, 10))
 
         # Decorative texture strip -- purely cosmetic, lives in its own
@@ -771,7 +846,7 @@ class VerityNativeGUI:
         self.toolbar.pack(fill="x", padx=10, pady=(4, 0))
 
         def toolbtn(parent, text, cmd, side="left"):
-            b = tk.Button(parent, text=text, command=cmd, relief="flat", padx=8)
+            b = tk.Button(parent, text=text, command=cmd, relief="flat", padx=8, font=self._font())
             b.pack(side=side, padx=4)
             return b
 
@@ -781,13 +856,13 @@ class VerityNativeGUI:
 
         self.always_on_top_check = tk.Checkbutton(
             self.toolbar, text=UI_TEXT[self._lang]["always_on_top"], variable=self.always_on_top_var,
-            command=self.on_toggle_always_on_top, relief="flat",
+            command=self.on_toggle_always_on_top, relief="flat", font=self._font(),
         )
         self.always_on_top_check.pack(side="left", padx=4)
 
         self.output = scrolledtext.ScrolledText(
             self.root, wrap="word", insertbackground=theme["fg"],
-            font=FONT, state="disabled", relief="flat", padx=10, pady=8, height=16,
+            font=self._font(), state="disabled", relief="flat", padx=10, pady=8, height=16,
         )
         self.output.pack(fill="both", expand=True, padx=10, pady=(8, 4))
 
@@ -796,9 +871,15 @@ class VerityNativeGUI:
 
         self.question_label = tk.Label(
             self.question_panel, text=UI_TEXT[self._lang]["starting"],
-            font=FONT_BOLD, anchor="w", justify="left", wraplength=860,
+            font=self._font(bold=True), anchor="w", justify="left", wraplength=BASE_WIDTH - 60,
         )
         self.question_label.pack(fill="x", padx=10, pady=(8, 4))
+        # Keeps the question text wrapping to fit the label's *actual*
+        # current width instead of a fixed guess, so it never gets clipped
+        # or runs under the window edge as the window is resized.
+        self.question_label.bind(
+            "<Configure>", lambda e: self.question_label.configure(wraplength=max(120, e.width - 10))
+        )
 
         self.input_buttons_frame = tk.Frame(self.question_panel)
         self.input_buttons_frame.pack(fill="x", padx=10, pady=(0, 10))
@@ -885,9 +966,9 @@ class VerityNativeGUI:
         for cname, hexcolor in theme["colours"].items():
             if hexcolor:
                 self.output.tag_configure(cname, foreground=hexcolor)
-        self.output.tag_configure("echo", foreground=theme["echo_fg"], font=FONT_BOLD)
-        self.output.tag_configure("call_echo", foreground=theme["colours"]["green"], font=FONT_BOLD)
-        self.output.tag_configure("system", foreground=theme["system_fg"], font=("Consolas", 10, "italic"))
+        self.output.tag_configure("echo", foreground=theme["echo_fg"], font=self._font(bold=True))
+        self.output.tag_configure("call_echo", foreground=theme["colours"]["green"], font=self._font(bold=True))
+        self.output.tag_configure("system", foreground=theme["system_fg"], font=self._font(BASE_SMALL_SIZE, italic=True))
 
         self.question_panel.configure(bg=theme["panel_bg"])
         self.question_label.configure(fg=theme["question_fg"], bg=theme["panel_bg"])
@@ -1181,10 +1262,10 @@ class VerityNativeGUI:
 
         for i, (label, value) in enumerate(options):
             btn = tk.Button(
-                self.input_buttons_frame, text=label, anchor="w",
+                self.input_buttons_frame, text=label, anchor="w", font=self._font(),
                 bg=theme["btn_bg"], fg=theme["fg"], disabledforeground=theme["disabled_fg"],
                 activebackground=theme["btn_active_bg"], activeforeground=theme["btn_active_fg"],
-                relief="flat", padx=10, pady=8,
+                relief="flat", padx=round(10 * self._scale), pady=round(8 * self._scale),
                 state="disabled" if value in disabled_values else "normal",
                 command=lambda v=value, l=label: self._answer(v, l),
             )
