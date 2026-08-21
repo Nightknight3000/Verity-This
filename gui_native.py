@@ -36,6 +36,7 @@ Only the Python standard library (tkinter).
 
 from __future__ import annotations
 
+import json
 import os
 import queue
 import re
@@ -195,8 +196,6 @@ VALID_LOG_TAGS = {
     name for name, hexcolor in THEMES["Default"]["colours"].items() if hexcolor
 } | {"echo", "system", "call_echo"}
 
-ANSI_RE = re.compile(r"\x1b\[\d+m")
-
 # verity_this.py's own banner explains typing 'h'/'help', 'restart', and
 # 'exit' -- all now covered by the GUI's buttons instead of free text, so
 # these three lines (unlike the rest of the banner) are suppressed from the
@@ -214,87 +213,190 @@ SUPPRESSED_INTRO_LINES = {
 AUTOFILL_RE = re.compile(r"(Outside statue|Inside wall) right: ([a-z]{2})")
 
 
-def clean_prompt(text: str) -> str:
-    """Strips ANSI codes / tabs / trailing colon so a raw CLI prompt string
-    reads well as a GUI label."""
-    text = ANSI_RE.sub("", text).replace("\t", "").strip()
-    if text.endswith(":"):
-        text = text[:-1]
-    return text.strip()
-
-
 # ---------------------------------------------------------------------------
-# Friendly button labels for each constants.py dict, keyed by input_type.
-# (Hardcoded from the actual src/utils/constants.py content -- not guessed.)
+# Language support -- every piece of GUI-owned text (chrome, questions,
+# option labels, and the scrolling log) is looked up from one of the
+# language dictionaries in src/utils/constants.py rather than hard-coded in
+# English, so switching the "Language" dropdown reaches every visible
+# panel. DEFAULT_LANGUAGE (in that file) is rewritten in place by
+# persist_default_language() whenever the dropdown changes, so the next run
+# of this script starts in that language. DEFAULT_THEME works the same way
+# for the "Theme" dropdown, via persist_default_theme().
 # ---------------------------------------------------------------------------
 
-MODE_LABELS = {
-    "normal": "Normal",
-    "all_normal": "All Normal",
-    "triumph": "Triumph",
-    "challenge": "Challenge",
-    "hard_challenge": "Hard Challenge",
-    "triumph+challenge": "Triumph + Challenge",
-    "triumph+hard_challenge": "Triumph + Hard Challenge",
-}
-N_STRAT_LABELS = {"double-up": "Double-Up", "speed": "Speed"}
-POSITION_LABELS = {
-    "outside": "Outside",
-    "left": "Inside Left",
-    "middle": "Inside Middle",
-    "right": "Inside Right",
-}
-NUM_DOUBLES_LABELS = {"0": "0 (no doubles)", "1": "1 double", "3": "3 (all doubled)"}
-BODY_LABELS = {
-    "cc": "Sphere (cc)",
-    "ss": "Cube (ss)",
-    "tt": "Pyramid (tt)",
-    "st": "Prism (st)",
-    "cs": "Cylinder (cs)",
-    "ct": "Cone (ct)",
-}
+from src.utils import constants as _constants_module
+from src.utils.constants import (
+    DEFAULT_LANGUAGE, LANGUAGE_NAMES, UI_TEXT, QUESTION_PROMPTS,
+    MODE_LABELS, N_STRAT_LABELS, POSITION_LABELS, NUM_DOUBLES_LABELS,
+    BODY_LABELS, SHAPE_2D_NAMES, SHORT_PROMPT_LABELS, FIELD_SHORT_NAME,
+    POS_ADV_DE, DEFAULT_THEME,
+)
 
-# Inside walls show the 2D symbol pairs directly (unlike the outside
-# statues, which show the corresponding 3D body) -- so 'l'/'m'/'r' options
-# are labelled as a combination of their two 2D parts when io_context is
-# "inside", instead of the 3D body name used for "outside".
-SHAPE_2D_NAMES = {"c": "Circle", "s": "Square", "t": "Triangle"}
+def _persist_default_constant(const_name: str, value: str) -> None:
+    """Rewrites a `NAME = "..."` constant in src/utils/constants.py in
+    place, so the next `python gui_native.py` run starts with `value`
+    instead of whatever that constant used to default to."""
+    try:
+        path = os.path.abspath(_constants_module.__file__)
+        with open(path, "r", encoding="utf-8") as f:
+            source = f.read()
+        pattern = re.compile(rf'^{re.escape(const_name)} = ".*"$', re.MULTILINE)
+        new_source, count = pattern.subn(f'{const_name} = "{value}"', source, count=1)
+        if count and new_source != source:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(new_source)
+    except OSError:
+        pass
 
 
-def body_2d_label(body_key: str) -> str:
-    return " + ".join(SHAPE_2D_NAMES.get(ch, ch) for ch in body_key)
+# A PyInstaller build (`pyinstaller gui_native.py -F --windowed`) has no
+# writable copy of constants.py to rewrite: -F re-extracts the bundled
+# sources into a fresh temp folder (sys._MEIPASS) on every launch, so any
+# edit made there is gone the moment the .exe exits, and _persist_default_
+# constant()'s open(path, "w") either silently no-ops (caught OSError) or
+# edits a copy nobody will ever read again. When frozen, persistence
+# instead goes through a small JSON file in the user's per-user app-data
+# folder, which -- unlike the temp extraction folder -- actually survives
+# between runs of the .exe.
+
+def _is_frozen() -> bool:
+    return bool(getattr(sys, "frozen", False))
+
+
+def _settings_file_path() -> str:
+    base = os.getenv("APPDATA") or os.path.expanduser("~")
+    settings_dir = os.path.join(base, "VerityThis")
+    os.makedirs(settings_dir, exist_ok=True)
+    return os.path.join(settings_dir, "gui_settings.json")
+
+
+def _load_persisted_settings() -> dict:
+    """Only meaningful for a frozen build -- returns {} when running from
+    source, so callers naturally fall back to the DEFAULT_* constants."""
+    if not _is_frozen():
+        return {}
+    try:
+        with open(_settings_file_path(), "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_persisted_setting(key: str, value: str) -> None:
+    settings = _load_persisted_settings()
+    settings[key] = value
+    try:
+        with open(_settings_file_path(), "w", encoding="utf-8") as f:
+            json.dump(settings, f)
+    except OSError:
+        pass
+
+
+def persist_default_language(lang_code: str) -> None:
+    """Rewrites DEFAULT_LANGUAGE so the next run starts in the language
+    just picked from the dropdown, instead of always resetting to
+    English. In a frozen .exe, saves to the per-user settings file
+    instead (see _save_persisted_setting)."""
+    if _is_frozen():
+        _save_persisted_setting("language", lang_code)
+    else:
+        _persist_default_constant("DEFAULT_LANGUAGE", lang_code)
+
+
+def persist_default_theme(theme_name: str) -> None:
+    """Rewrites DEFAULT_THEME so the next run starts with the theme just
+    picked from the dropdown, instead of always resetting to "Default".
+    In a frozen .exe, saves to the per-user settings file instead (see
+    _save_persisted_setting)."""
+    if _is_frozen():
+        _save_persisted_setting("theme", theme_name)
+    else:
+        _persist_default_constant("DEFAULT_THEME", theme_name)
+
+
+def body_2d_label(body_key: str, lang: str) -> str:
+    names = SHAPE_2D_NAMES[lang]
+    return " + ".join(names.get(ch, ch) for ch in body_key)
 
 
 INIT_OPTIONS = ["cst", "cts", "sct", "stc", "tcs", "tsc"]
 
-LABEL_MAPS = {
-    "mode": MODE_LABELS,
-    "n_strat": N_STRAT_LABELS,
-    "self_pos": POSITION_LABELS,
-    "number_of_doubles": NUM_DOUBLES_LABELS,
-    "l": BODY_LABELS,
-    "m": BODY_LABELS,
-    "r": BODY_LABELS,
-}
 
-# Short prefixes used in the log to show which question an echoed answer
-# belongs to, e.g. "> Mode: Normal" or "> Inside Left: Sphere (cc)".
-SHORT_PROMPT_LABELS = {
-    "mode": "Mode",
-    "n_strat": "Strategy",
-    "init": "Init",
-    "self_pos": "Position",
-    "number_of_doubles": "Doubles",
-    "yesno": "Restart?",
-}
-FIELD_SHORT_NAME = {"l": "Left", "m": "Middle", "r": "Right"}
+def label_maps_for(lang: str) -> dict:
+    return {
+        "mode": MODE_LABELS[lang],
+        "n_strat": N_STRAT_LABELS[lang],
+        "self_pos": POSITION_LABELS[lang],
+        "number_of_doubles": NUM_DOUBLES_LABELS[lang],
+        "l": BODY_LABELS[lang],
+        "m": BODY_LABELS[lang],
+        "r": BODY_LABELS[lang],
+    }
 
 
-def short_prompt_label(input_type: str, io_context: "str | None") -> str:
-    if input_type in FIELD_SHORT_NAME:
-        side = "Inside" if io_context == "inside" else "Outside"
-        return f"{side} {FIELD_SHORT_NAME[input_type]}"
-    return SHORT_PROMPT_LABELS.get(input_type, str(input_type).replace("_", " ").title())
+def short_prompt_label(input_type: str, io_context: "str | None", lang: str) -> str:
+    if input_type in FIELD_SHORT_NAME[lang]:
+        side = UI_TEXT[lang]["inside_word"] if io_context == "inside" else UI_TEXT[lang]["outside_word"]
+        return f"{side} {FIELD_SHORT_NAME[lang][input_type]}"
+    return SHORT_PROMPT_LABELS[lang].get(input_type, str(input_type).replace("_", " ").title())
+
+
+# ---------------------------------------------------------------------------
+# Translation of the free-form text the underlying tool prints via
+# print_colour (round headers, dunk instructions, validation errors, the
+# closing thank-you message, ...). The tool itself always emits English --
+# translation happens here, as a small set of regex substitutions covering
+# every phrase actually produced by verity_this.py / src/algorithm/
+# instructions.py / src/io/read_inputs.py, applied right before the text is
+# appended to the log.
+# ---------------------------------------------------------------------------
+
+_LOG_TRANSLATIONS_DE = [
+    (re.compile(r'\bRound (\d+)\b'), lambda m: f"Runde {m.group(1)}"),
+    (re.compile(r'Outside steps:'), lambda m: "Schritte außen:"),
+    (re.compile(r'Inside steps:'), lambda m: "Schritte innen:"),
+    (re.compile(r'\bInside (left|middle|right): Wait until partners are ready\.\.\.'),
+     lambda m: f"Innen {POS_ADV_DE[m.group(1)]}: Warte, bis die Partner bereit sind..."),
+    (re.compile(r'\bWait until partners are ready\.\.\.'),
+     lambda m: "Warte, bis die Partner bereit sind..."),
+    (re.compile(r'\bInside (left|middle|right): Dunk (\w+) on the (left|middle|right|outside) statue'),
+     lambda m: f"Innen {POS_ADV_DE[m.group(1)]}: {m.group(2)} auf die Statue {POS_ADV_DE[m.group(3)]}"),
+    (re.compile(r'\bOutside: Dunk (\w+) on the (left|middle|right|outside) statue'),
+     lambda m: f"Außen: {m.group(1)} auf die Statue {POS_ADV_DE[m.group(2)]}"),
+    (re.compile(r'\bDunk (\w+) on the (left|middle|right|outside) statue'),
+     lambda m: f"{m.group(1)} auf die Statue {POS_ADV_DE[m.group(2)]}"),
+    (re.compile(r'Thank you for using Verity This!'),
+     lambda m: "Danke, dass du Verity This! benutzt hast!"),
+    (re.compile(r'Feel free to leave a \*star\* and share the GitHub repo'),
+     lambda m: "Gib gerne einen *Star* und teile das GitHub-Repo"),
+    (re.compile(r'In normal mode, a position has to be specified\.'),
+     lambda m: "Im Normal-Modus muss eine Position angegeben werden."),
+    (re.compile(r'(Outside statue|Inside wall) (left|middle|right) call must contain (\w) at least once\.'),
+     lambda m: (f"Der {'äußere' if m.group(1) == 'Outside statue' else 'innere'} Ruf "
+                f"{POS_ADV_DE[m.group(2)]} muss {m.group(3)} mindestens einmal enthalten.")),
+    (re.compile(r'(Outside|Inside) inputs invalid\.'),
+     lambda m: f"{'Außen' if m.group(1) == 'Outside' else 'Innen'}-Eingaben ungültig."),
+    (re.compile(r'All called symbols have to occur at least once per side\.'),
+     lambda m: "Alle gerufenen Symbole müssen pro Seite mindestens einmal vorkommen."),
+    (re.compile(r'Symbols can occur at most twice in total\.'),
+     lambda m: "Symbole dürfen insgesamt höchstens zweimal vorkommen."),
+    (re.compile(r'The called symbol has to occur at least once per side\.'),
+     lambda m: "Das gerufene Symbol muss pro Seite mindestens einmal vorkommen."),
+    (re.compile(r'The given call is doubled, but num_doubles = (\d+) was given which is not possible then\.'),
+     lambda m: (f"Der angegebene Ruf ist gedoppelt, aber num_doubles = {m.group(1)} wurde angegeben, "
+                f"was dann nicht möglich ist.")),
+    (re.compile(r'The given call is not doubled, but num_doubles = (\d+) was given which is not possible then\.'),
+     lambda m: (f"Der angegebene Ruf ist nicht gedoppelt, aber num_doubles = {m.group(1)} wurde angegeben, "
+                f"was dann nicht möglich ist.")),
+]
+
+
+def translate_log_text(text: str, lang: str) -> str:
+    if lang == "en":
+        return text
+    for pattern, repl in _LOG_TRANSLATIONS_DE:
+        text = pattern.sub(repl, text)
+    return text
 
 # src/io/read_inputs.py now checks, per field, that the 'left' call contains
 # init[0], 'middle' contains init[1], and 'right' (when asked directly)
@@ -588,10 +690,18 @@ class VerityNativeGUI:
         self._replay_queue: "list[dict]" = []   # answers still being auto-replayed after an Undo
         self._last_options: "list | None" = None       # options shown by the current
         self._last_disabled: "frozenset" = frozenset()  # question, if any -- for theme re-render
+        self._current_ref_keys: "list | None" = None    # value keys of the current question's
+        self._current_is_optional: bool = False          # options -- for language re-render
+        self._required_letter: "str | None" = None
+        self._status_key: str = "starting"               # which UI_TEXT entry status_var shows
+        self._question_static_key = None                 # non-interactive question_label state:
+                                                           # a UI_TEXT key, or ("replaying_n", n)
 
         install_patches()
-        self._theme_name = "Default"
+        persisted = _load_persisted_settings()  # {} unless running frozen
+        self._theme_name = persisted.get("theme") if persisted.get("theme") in THEMES else DEFAULT_THEME
         self._theme = THEMES[self._theme_name]
+        self._lang = persisted.get("language") if persisted.get("language") in LANGUAGE_NAMES else DEFAULT_LANGUAGE
         self._ttk_style = ttk.Style()
         try:
             self._ttk_style.theme_use("clam")  # only 'clam' honours custom Combobox colours
@@ -619,9 +729,10 @@ class VerityNativeGUI:
         self.title_label.pack(side="left")
 
         # Packed right-to-left so the theme selector lands in the true
-        # top-right corner, with the status text just to its left.
+        # top-right corner, with the language selector, then the status
+        # text, just to its left.
         self.theme_frame = tk.Frame(self.header)
-        self.theme_caption = tk.Label(self.theme_frame, text="Theme:", font=FONT)
+        self.theme_caption = tk.Label(self.theme_frame, text=UI_TEXT[self._lang]["theme_caption"], font=FONT)
         self.theme_caption.pack(side="left", padx=(0, 4))
         self.theme_var = tk.StringVar(value=self._theme_name)
         self.theme_combo = ttk.Combobox(
@@ -632,7 +743,20 @@ class VerityNativeGUI:
         self.theme_combo.bind("<<ComboboxSelected>>", self._on_theme_selected)
         self.theme_frame.pack(side="right")
 
-        self.status_var = tk.StringVar(value="Starting...")
+        self.lang_frame = tk.Frame(self.header)
+        self.language_caption = tk.Label(self.lang_frame, text=UI_TEXT[self._lang]["language_caption"], font=FONT)
+        self.language_caption.pack(side="left", padx=(0, 4))
+        self.lang_var = tk.StringVar(value=LANGUAGE_NAMES[self._lang])
+        self.lang_combo = ttk.Combobox(
+            self.lang_frame, textvariable=self.lang_var,
+            values=list(LANGUAGE_NAMES.values()), state="readonly", width=10,
+            font=FONT, style="Themed.TCombobox",
+        )
+        self.lang_combo.pack(side="left")
+        self.lang_combo.bind("<<ComboboxSelected>>", self._on_language_selected)
+        self.lang_frame.pack(side="right", padx=(0, 10))
+
+        self.status_var = tk.StringVar(value=UI_TEXT[self._lang]["starting"])
         self.status_label = tk.Label(self.header, textvariable=self.status_var, font=FONT)
         self.status_label.pack(side="right", padx=(0, 10))
 
@@ -651,12 +775,12 @@ class VerityNativeGUI:
             b.pack(side=side, padx=4)
             return b
 
-        self.new_session_btn = toolbtn(self.toolbar, "\u25B6 New Session", self.start_new_session)
-        self.undo_btn = toolbtn(self.toolbar, "\u2B05 Undo", self.on_undo)
-        self.exit_btn = toolbtn(self.toolbar, "\u2715 Exit tool", self.on_exit_tool)
+        self.new_session_btn = toolbtn(self.toolbar, UI_TEXT[self._lang]["new_session_btn"], self.start_new_session)
+        self.undo_btn = toolbtn(self.toolbar, UI_TEXT[self._lang]["undo_btn"], self.on_undo)
+        self.exit_btn = toolbtn(self.toolbar, UI_TEXT[self._lang]["exit_btn"], self.on_exit_tool)
 
         self.always_on_top_check = tk.Checkbutton(
-            self.toolbar, text="Always on top", variable=self.always_on_top_var,
+            self.toolbar, text=UI_TEXT[self._lang]["always_on_top"], variable=self.always_on_top_var,
             command=self.on_toggle_always_on_top, relief="flat",
         )
         self.always_on_top_check.pack(side="left", padx=4)
@@ -671,7 +795,7 @@ class VerityNativeGUI:
         self.question_panel.pack(fill="x", padx=10, pady=(0, 10))
 
         self.question_label = tk.Label(
-            self.question_panel, text="Starting...",
+            self.question_panel, text=UI_TEXT[self._lang]["starting"],
             font=FONT_BOLD, anchor="w", justify="left", wraplength=860,
         )
         self.question_label.pack(fill="x", padx=10, pady=(8, 4))
@@ -706,7 +830,15 @@ class VerityNativeGUI:
             canvas.create_line(0, 7, w, 7, fill=spec["accent"], width=1)
 
     def _on_theme_selected(self, event=None) -> None:
-        self._apply_theme(self.theme_var.get())
+        name = self.theme_var.get()
+        self._apply_theme(name)
+        persist_default_theme(name)
+
+    def _on_language_selected(self, event=None) -> None:
+        display_name = self.lang_var.get()
+        lang = next(code for code, name in LANGUAGE_NAMES.items() if name == display_name)
+        self._apply_language(lang)
+        persist_default_language(lang)
 
     def _apply_theme(self, name: str) -> None:
         theme = THEMES[name]
@@ -719,6 +851,8 @@ class VerityNativeGUI:
         self.title_label.configure(fg=theme["title_fg"], bg=theme["bg"])
         self.theme_frame.configure(bg=theme["bg"])
         self.theme_caption.configure(fg=theme["status_fg"], bg=theme["bg"])
+        self.lang_frame.configure(bg=theme["bg"])
+        self.language_caption.configure(fg=theme["status_fg"], bg=theme["bg"])
         self.status_label.configure(fg=theme["status_fg"], bg=theme["bg"])
 
         self._ttk_style.configure(
@@ -766,6 +900,80 @@ class VerityNativeGUI:
             self._clear_input_frame()
             self._render_option_buttons(options, disabled)
 
+    def _apply_language(self, lang: str) -> None:
+        self._lang = lang
+        self.lang_var.set(LANGUAGE_NAMES[lang])
+        t = UI_TEXT[lang]
+
+        self.theme_caption.configure(text=t["theme_caption"])
+        self.language_caption.configure(text=t["language_caption"])
+        self.new_session_btn.configure(text=t["new_session_btn"])
+        self.undo_btn.configure(text=t["undo_btn"])
+        self.exit_btn.configure(text=t["exit_btn"])
+        self.always_on_top_check.configure(text=t["always_on_top"])
+
+        self.status_var.set(t[self._status_key])
+        self.question_label.config(text=self._question_label_text())
+
+        if self._last_options is not None:
+            if self._current_input_type == "yesno":
+                options = [(t["yes_restart"], "y"), (t["no_end_session"], "n")]
+            else:
+                options = self._options_for(
+                    self._current_input_type, self._current_io_context,
+                    self._current_ref_keys, self._current_is_optional, lang,
+                )
+            disabled = self._last_disabled
+            self._clear_input_frame()
+            self._render_option_buttons(options, disabled)
+
+    # -------------------------------------------------------------- text --
+
+    def _build_question_prompt_text(self, input_type: str, io_context: "str | None", lang: str) -> str:
+        qp = QUESTION_PROMPTS[lang]
+        if input_type in ("l", "m", "r"):
+            field = qp["field"][input_type]
+            template = qp["call_inside"] if io_context == "inside" else qp["call_outside"]
+            return template.format(field=field)
+        if input_type == "self_pos":
+            text = qp["self_pos"]
+            if self._current_mode != "normal":
+                text += qp["self_pos_optional_suffix"]
+            return text
+        return qp.get(input_type, "")
+
+    def _question_label_text(self) -> str:
+        lang = self._lang
+        t = UI_TEXT[lang]
+        if self._question_static_key is not None:
+            key = self._question_static_key
+            if isinstance(key, tuple) and key[0] == "replaying_n":
+                return t["replaying_question_n"].format(n=key[1])
+            return t[key]
+        if self._current_input_type == "yesno":
+            return QUESTION_PROMPTS[lang]["restart"]
+        if self._current_input_type is not None:
+            text = self._build_question_prompt_text(self._current_input_type, self._current_io_context, lang)
+            if self._required_letter:
+                text += t["must_contain"].format(letter=self._required_letter)
+            return text
+        return ""
+
+    def _options_for(self, input_type, io_context, ref_keys, is_optional, lang) -> list:
+        if input_type == "init":
+            options = [(p.upper(), p) for p in INIT_OPTIONS]
+        elif input_type in ("l", "m", "r") and io_context == "inside":
+            options = [(body_2d_label(k, lang), k) for k in ref_keys]
+        else:
+            label_map = label_maps_for(lang).get(input_type, {})
+            options = [
+                (label_map.get(k, str(k).replace("_", " ").capitalize()), k)
+                for k in ref_keys
+            ]
+        if is_optional:
+            options.append((UI_TEXT[lang]["not_specified_skip"], None))
+        return options
+
     # ------------------------------------------------------------ session --
 
     def start_new_session(self, reset_history: bool = True) -> None:
@@ -775,8 +983,10 @@ class VerityNativeGUI:
 
         self._clear_output()
         self._clear_input_frame()
-        self.question_label.config(text="Starting...")
-        self.status_var.set("Running")
+        self._question_static_key = "starting"
+        self._status_key = "running"
+        self.question_label.config(text=self._question_label_text())
+        self.status_var.set(UI_TEXT[self._lang][self._status_key])
         self._set_session_buttons_enabled(True)
         self._current_input_type = None
         self._current_init = None
@@ -810,8 +1020,10 @@ class VerityNativeGUI:
 
         self._clear_output()
         self._clear_input_frame()
-        self.question_label.config(text="Replaying previous steps...")
-        self.status_var.set("Replaying...")
+        self._question_static_key = "replaying_question"
+        self._status_key = "replaying_status"
+        self.question_label.config(text=self._question_label_text())
+        self.status_var.set(UI_TEXT[self._lang][self._status_key])
         self._set_session_buttons_enabled(True)
         self._current_input_type = None
         self._current_init = None
@@ -875,17 +1087,20 @@ class VerityNativeGUI:
             if m:
                 side_text, value = m.group(1), m.group(2)
                 io_context = "inside" if side_text == "Inside wall" else "outside"
-                label = body_2d_label(value) if io_context == "inside" else BODY_LABELS.get(value, value)
-                short = short_prompt_label("r", io_context)
-                self._append_log(f"> {short}: {label} <- (auto-filled)\n", "cyan")
+                lang = self._lang
+                label = body_2d_label(value, lang) if io_context == "inside" else BODY_LABELS[lang].get(value, value)
+                short = short_prompt_label("r", io_context, lang)
+                self._append_log(f"> {short}: {label}{UI_TEXT[lang]['auto_filled_suffix']}\n", "cyan")
                 self._last_call_io_context = io_context
                 return
-        self._append_log(msg + end, colour)
+        self._append_log(translate_log_text(msg, self._lang) + end, colour)
 
     def _on_session_done(self) -> None:
         self._clear_input_frame()
-        self.question_label.config(text='Session ended -- click "New Session" to run it again.')
-        self.status_var.set("Session ended")
+        self._question_static_key = "session_ended_msg"
+        self._status_key = "session_ended_status"
+        self.question_label.config(text=self._question_label_text())
+        self.status_var.set(UI_TEXT[self._lang][self._status_key])
         self._set_session_buttons_enabled(False)
 
     # ------------------------------------------------------------- input --
@@ -894,6 +1109,9 @@ class VerityNativeGUI:
         previous_question = self._last_question_shown
         self._current_input_type = input_type
         self._current_io_context = "inside" if "Inside" in prompt else "outside"
+        self._current_ref_keys = list(ref.keys())
+        self._current_is_optional = is_optional
+        self._question_static_key = None
         self._last_question_shown = (input_type, self._current_io_context)
         self._clear_input_frame()
 
@@ -904,9 +1122,8 @@ class VerityNativeGUI:
 
         if self._replay_queue and self._replay_queue[0]["input_type"] == input_type:
             entry = self._replay_queue.pop(0)
-            self.question_label.config(
-                text=f"Replaying previous steps... ({len(self._replay_queue)} left)"
-            )
+            self._question_static_key = ("replaying_n", len(self._replay_queue))
+            self.question_label.config(text=self._question_label_text())
             self._finalize_answer(entry["value"], entry.get("label"))
             return
         if self._replay_queue:
@@ -916,28 +1133,16 @@ class VerityNativeGUI:
             # this and all further questions be asked live instead.
             self._replay_queue = []
 
-        required_letter = required_init_letter(input_type, self._current_init)
-        label_text = clean_prompt(prompt)
-        if required_letter:
-            label_text += f"  (must contain '{required_letter}')"
-        self.question_label.config(text=label_text)
+        self._required_letter = required_init_letter(input_type, self._current_init)
+        self.question_label.config(text=self._question_label_text())
 
-        if input_type == "init":
-            options = [(p.upper(), p) for p in INIT_OPTIONS]
-        elif input_type in ("l", "m", "r") and self._current_io_context == "inside":
-            options = [(body_2d_label(k), k) for k in ref.keys()]
-        else:
-            label_map = LABEL_MAPS.get(input_type, {})
-            options = [
-                (label_map.get(k, str(k).replace("_", " ").capitalize()), k)
-                for k in ref.keys()
-            ]
-
-        if is_optional:
-            options.append(("Not specified / skip", None))
+        options = self._options_for(
+            input_type, self._current_io_context, self._current_ref_keys,
+            is_optional, self._lang,
+        )
 
         disabled_values = compute_disabled_values(
-            input_type, options, required_letter, self._current_init,
+            input_type, options, self._required_letter, self._current_init,
             self._current_io_context, self._last_call_answer, _shape_key_order,
             previous_question, self._current_mode,
         )
@@ -946,21 +1151,24 @@ class VerityNativeGUI:
 
     def _show_yesno(self, prompt) -> None:
         self._current_input_type = "yesno"
+        self._question_static_key = None
         self._last_question_shown = ("yesno", self._current_io_context)
         self._clear_input_frame()
 
         if self._replay_queue and self._replay_queue[0]["input_type"] == "yesno":
             entry = self._replay_queue.pop(0)
-            self.question_label.config(
-                text=f"Replaying previous steps... ({len(self._replay_queue)} left)"
-            )
+            self._question_static_key = ("replaying_n", len(self._replay_queue))
+            self.question_label.config(text=self._question_label_text())
             self._finalize_answer(entry["value"], entry.get("label"))
             return
         if self._replay_queue:
             self._replay_queue = []
 
-        self.question_label.config(text=clean_prompt(prompt))
-        options = [("Yes, restart", "y"), ("No, end session", "n")]
+        self.question_label.config(text=self._question_label_text())
+        options = [
+            (UI_TEXT[self._lang]["yes_restart"], "y"),
+            (UI_TEXT[self._lang]["no_end_session"], "n"),
+        ]
         self._render_option_buttons(options)
 
     def _render_option_buttons(self, options, disabled_values=frozenset()) -> None:
@@ -1021,7 +1229,7 @@ class VerityNativeGUI:
         Undo (via _show_question/_show_yesno) -- so a replayed transcript
         looks identical to the original one."""
         if display_label:
-            short = short_prompt_label(self._current_input_type, self._current_io_context)
+            short = short_prompt_label(self._current_input_type, self._current_io_context, self._lang)
             tag = "call_echo" if self._current_input_type in ("l", "m", "r") else "echo"
             self._append_log(f"> {short}: {display_label}\n", tag)
         if self._current_input_type == "self_pos":
@@ -1033,7 +1241,8 @@ class VerityNativeGUI:
         if self._current_input_type in ("l", "m", "r"):
             self._last_call_answer = (self._current_input_type, self._current_io_context, value)
         self._clear_input_frame()
-        self.question_label.config(text="Waiting for the tool...")
+        self._question_static_key = "waiting_for_tool"
+        self.question_label.config(text=self._question_label_text())
         if self.broker:
             self.broker.send_answer(value)
 
