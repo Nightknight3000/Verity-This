@@ -1356,6 +1356,12 @@ class VerityNativeGUI:
         self.root.attributes("-topmost", self.always_on_top_var.get())
 
     def on_close(self) -> None:
+        for job in (self._resize_job,):
+            if job is not None:
+                try:
+                    self.root.after_cancel(job)
+                except tk.TclError:
+                    pass
         if self.broker:
             self.broker.send_exit()
         self.root.destroy()
